@@ -1,0 +1,39 @@
+name: build-and-deploy
+
+on:
+  schedule:
+    # 週一~週五 台北 21:30 (= UTC 13:30), 收盤後 FinLab 還原價 etl 已更新
+    - cron: '30 13 * * 1-5'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build dashboard
+        env:
+          FINLAB_API_TOKEN: ${{ secrets.FINLAB_API_TOKEN }}
+        run: uv run --python 3.12 --with finlab python build_dashboard.py
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

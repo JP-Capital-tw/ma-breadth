@@ -1,0 +1,4 @@
+dist/
+finlab_db/
+__pycache__/
+.env
