@@ -26,9 +26,19 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
 
+      # 保存 finlab 資料快取: 有快取時 finlab 只下載增量 delta 併入本地,
+      # 沒快取才會全量下載 (~200MB)。每次 run 都存新 key, restore 撈最新。
+      - uses: actions/cache@v4
+        with:
+          path: finlab_db
+          key: finlab-db-${{ github.run_id }}
+          restore-keys: |
+            finlab-db-
+
       - name: Build dashboard
         env:
           FINLAB_API_TOKEN: ${{ secrets.FINLAB_API_TOKEN }}
+          FINLAB_DB_DIR: ${{ github.workspace }}/finlab_db
         run: uv run --python 3.12 --with finlab python build_dashboard.py
 
       - uses: actions/upload-pages-artifact@v3
