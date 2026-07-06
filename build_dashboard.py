@@ -28,6 +28,7 @@ adj_h = data.get('etl:adj_high')
 adj_l = data.get('etl:adj_low')
 vol = data.get('price:成交股數')
 info = data.get('company_basic_info')
+idx_close = data.get('market_transaction_info:收盤指數')   # TAIEX / OTC 收盤指數
 
 common = info[info['市場別'].isin(['sii', 'otc']) & info['stock_id'].str.match(r'^\d{4}$')]
 name_map = dict(zip(common['stock_id'], common['公司簡稱']))
@@ -109,6 +110,47 @@ for _, rows in TABLE_ROWS:
         for d in dates:
             cnt = int((flag_df[key].loc[d] & valid.loc[d]).sum())
             table[key][d] = (cnt, cnt / totals[d] * 100)
+
+# ---------- 3.5 市場總覽 (近 60 交易日 x 合計/上市/上櫃) ----------
+OV_N = 60
+ov_idx = adj_c.index[-OV_N:]
+chg = adj_c.pct_change()          # 還原價日漲跌幅 (正確處理除權息)
+ma20_up = ma_up[20]               # 月線上揚
+seg_cols = {
+    'all': univ,
+    'sii': [c for c in univ if board_map[c] == 'sii'],
+    'otc': [c for c in univ if board_map[c] == 'otc'],
+}
+ov_seg = {}
+for seg, cols in seg_cols.items():
+    v = valid.loc[ov_idx, cols]
+    tot = v.sum(axis=1)
+    def pct(bdf):
+        return ((bdf.loc[ov_idx, cols] & v).sum(axis=1) / tot * 100).round(1).tolist()
+    def cnt(bdf):
+        return (bdf.loc[ov_idx, cols] & v).sum(axis=1).astype(int).tolist()
+    c7 = chg.loc[ov_idx, cols]
+    ov_seg[seg] = {
+        'p5': pct(gt[5]), 'p10': pct(gt[10]), 'p20': pct(gt[20]), 'p60': pct(gt[60]),
+        'p5m': pct(gt[5] & gt[20]),                        # 站上5MA且站上月線
+        'up7': ((c7 >= 0.07) & v).sum(axis=1).astype(int).tolist(),
+        'dn7': ((c7 <= -0.07) & v).sum(axis=1).astype(int).tolist(),
+        'c5': cnt(new_gt[5]), 'c20': cnt(new_gt[20]), 'c60': cnt(new_gt[60]),
+        'b5': cnt(new_lt[5]), 'b20': cnt(new_lt[20]), 'b60': cnt(new_lt[60]),
+        'tot': tot.astype(int).tolist(),
+    }
+
+def _idx_list(col):
+    s = idx_close[col].reindex(ov_idx)
+    return [None if pd.isna(x) else round(float(x), 2) for x in s]
+
+ov_payload = {
+    'dates': [d.strftime('%Y/%m/%d') for d in ov_idx],
+    'taiex': _idx_list('TAIEX'),
+    'otcidx': _idx_list('OTC'),
+    'seg': ov_seg,
+}
+ov_json = json.dumps(ov_payload, ensure_ascii=False, separators=(',', ':'))
 
 # ---------- 4. 每檔資料 (最新日 flags bitmask + 240 日圖表, 前端滾輪縮放) ----------
 CHART_N = 240
@@ -205,6 +247,18 @@ td.clickable{cursor:pointer;} td.clickable:hover{color:var(--acc);text-decoratio
 .pct{color:#6b7688;font-size:10.5px;}
 tr.grp td{background:#12202b;color:var(--acc);text-align:left;font-weight:600;padding:4px 10px;}
 tr.total td{color:#c9a24b;font-weight:600;}
+/* overview */
+.tabs{display:flex;gap:8px;margin:10px 0;}
+.tab{background:#1a2130;border:1px solid var(--line);color:var(--txt);border-radius:6px;
+ padding:5px 16px;cursor:pointer;font-size:13.5px;}
+.tab.active{background:#12414d;border-color:var(--acc);color:var(--acc);font-weight:600;}
+.ovwrap{max-height:420px;overflow:auto;margin-bottom:14px;border:1px solid var(--line);border-radius:8px;}
+#ovtbl{border-collapse:collapse;font-size:12px;white-space:nowrap;width:100%;min-width:980px;}
+#ovtbl th{position:sticky;top:0;background:#171a21;color:#9fb0c4;z-index:2;padding:6px 8px;}
+#ovtbl td{text-align:center;padding:3.5px 8px;border-bottom:1px solid #1a2029;}
+#ovtbl td:first-child{color:#9fb0c4;}
+.cup{color:#f08a94;}.cdn{color:#7dd8ae;}
+#ovcv{margin-top:4px;}
 /* filter */
 .cbrow{display:flex;align-items:center;gap:10px;padding:4px 0;border-bottom:1px dashed #1c2230;}
 .cbtitle{width:52px;color:var(--dim);font-size:13px;flex:none;text-align:right;}
@@ -246,6 +300,22 @@ canvas{width:100%;height:auto;display:block;}
 <div class='sub'>全部價格與均線皆為<b style='color:#5fd0c8'>還原價 (adjusted)</b> · 均線 5/10/20/60/120/240 · 資料日 <b>__DATE__</b> · 母數 __TOTAL__ 檔
  · <span style='color:#4a90d9'>▌</span>上市 <span style='color:#d98b4a'>▌</span>上櫃</div>
 
+<details class='sec' open><summary>市場總覽（近 60 交易日：站上均線比例、±7% 家數、過/破均線家數、指數對照）</summary>
+<div class='tabs'>
+  <button class='tab active' data-seg='all'>合計</button>
+  <button class='tab' data-seg='sii'>上市</button>
+  <button class='tab' data-seg='otc'>上櫃</button>
+</div>
+<div class='ovwrap'><table id='ovtbl'></table></div>
+<canvas id='ovcv' width='1660' height='520'></canvas>
+<div class='legend'>
+  <span><i style='background:rgba(244,91,105,.85)'></i>&gt;5MA %（右軸）</span>
+  <span><i style='background:rgba(62,207,142,.85)'></i>&gt;20MA %（右軸）</span>
+  <span><i style='background:#4a90d9'></i>指數（左軸）</span>
+  <span style='margin-left:auto'>表格：最新日在最上方 · %欄紅→黃→綠對應弱→強 · 過/破 = 當日新站上/新跌破家數</span>
+</div>
+</details>
+
 <details class='sec'><summary>五日廣度表（點分類名稱可直接套用篩選）</summary>
 <div style='overflow-x:auto'>__TABLE__</div></details>
 
@@ -275,6 +345,75 @@ __FILTERS__
 
 <script>
 const DATA = __DATA__;
+const OV = __OVDATA__;
+
+// ---------- 市場總覽 ----------
+let ovSeg='all';
+const heat=p=>`background:hsl(${Math.max(0,Math.min(120,p*1.2))},42%,27%)`;
+const dbar=(v,max,color)=>{const w=max?Math.min(100,v/max*100):0;
+  return `background:linear-gradient(90deg,${color} ${w}%,transparent ${w}%)`;};
+function renderOv(){
+  const s=OV.seg[ovSeg], n=OV.dates.length;
+  const idxCols= ovSeg==='all' ? [['加權指數','taiex'],['櫃買指數','otcidx']]
+              : ovSeg==='sii' ? [['加權指數','taiex']] : [['櫃買指數','otcidx']];
+  let h='<thead><tr><th>日期</th>'+idxCols.map(c=>`<th>${c[0]}</th>`).join('')+
+    '<th>&gt;5MA</th><th>&gt;5MA且&gt;月線</th><th>&gt;10MA</th><th>&gt;20MA</th><th>&gt;60MA</th>'+
+    '<th>+7%</th><th>-7%</th><th>過5MA</th><th>過20MA</th><th>過60MA</th>'+
+    '<th>破5MA</th><th>破20MA</th><th>破60MA</th></tr></thead><tbody>';
+  const m7=Math.max(...s.up7,...s.dn7,1);
+  for(let i=n-1;i>=0;i--){
+    h+=`<tr><td>${OV.dates[i]}</td>`;
+    for(const c of idxCols){const v=OV[c[1]][i];h+=`<td>${v==null?'-':v.toLocaleString()}</td>`;}
+    for(const k of ['p5','p5m','p10','p20','p60'])
+      h+=`<td style='${heat(s[k][i])}'>${Math.round(s[k][i])}%</td>`;
+    h+=`<td style='${dbar(s.up7[i],m7,"rgba(244,91,105,.45)")}'>${s.up7[i]}</td>`;
+    h+=`<td style='${dbar(s.dn7[i],m7,"rgba(62,207,142,.45)")}'>${s.dn7[i]}</td>`;
+    for(const k of ['c5','c20','c60'])h+=`<td class='cup'>${s[k][i]}</td>`;
+    for(const k of ['b5','b20','b60'])h+=`<td class='cdn'>${s[k][i]}</td>`;
+    h+='</tr>';
+  }
+  document.getElementById('ovtbl').innerHTML=h+'</tbody>';
+  drawOv();
+}
+function drawOv(){
+  const cv=document.getElementById('ovcv'),x=cv.getContext('2d');
+  const s=OV.seg[ovSeg];
+  const idx=ovSeg==='otc'?OV.otcidx:OV.taiex;
+  const W=cv.width,H=cv.height,PL=110,PR=86,PT=26,PB=56;
+  const IW=W-PL-PR,IH=H-PT-PB,n=OV.dates.length,cw=IW/n;
+  x.clearRect(0,0,W,H);
+  const YP=p=>PT+IH-(p/100)*IH;                       // 右軸 %
+  const vals=idx.filter(v=>v!=null);
+  let lo=Math.min(...vals),hi=Math.max(...vals);
+  const pad=(hi-lo)*0.08||1; lo-=pad;hi+=pad;
+  const YI=v=>PT+IH-((v-lo)/(hi-lo))*IH;              // 左軸 指數
+  x.font='20px sans-serif';
+  for(let p=0;p<=100;p+=20){
+    x.strokeStyle='#1c2230';x.beginPath();x.moveTo(PL,YP(p));x.lineTo(W-PR,YP(p));x.stroke();
+    x.fillStyle='#6b7688';x.textAlign='left';x.fillText(p+'%',W-PR+10,YP(p)+6);
+  }
+  x.textAlign='right';
+  for(let g=0;g<=4;g++){const v=lo+(hi-lo)*g/4;
+    x.fillText(Math.round(v).toLocaleString(),PL-10,YI(v)+6);}
+  const bw=cw*0.36;
+  for(let i=0;i<n;i++){
+    const X=PL+i*cw;
+    x.fillStyle='rgba(244,91,105,.7)';x.fillRect(X+cw*0.10,YP(s.p5[i]),bw,PT+IH-YP(s.p5[i]));
+    x.fillStyle='rgba(62,207,142,.7)';x.fillRect(X+cw*0.52,YP(s.p20[i]),bw,PT+IH-YP(s.p20[i]));
+  }
+  x.strokeStyle='#4a90d9';x.lineWidth=3.5;x.beginPath();let st=false;
+  for(let i=0;i<n;i++){const v=idx[i];if(v==null)continue;
+    const X=PL+i*cw+cw/2;
+    if(!st){x.moveTo(X,YI(v));st=true;}else x.lineTo(X,YI(v));}
+  x.stroke();
+  x.fillStyle='#6b7688';x.textAlign='center';
+  const stp=Math.max(1,Math.ceil(n/10));
+  for(let i=0;i<n;i+=stp){x.fillText(OV.dates[i].slice(5),PL+i*cw+cw/2,H-14);}
+}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  b.classList.add('active'); ovSeg=b.dataset.seg; renderOv();
+});
 const FK = DATA.flagKeys, BIT = {}; FK.forEach((k,i)=>BIT[k]=i);
 // 42 個 flag 超過 JS 32-bit 位元運算範圍, 用除法取位
 const hasFlag=(s,f)=>Math.floor(s.f/Math.pow(2,BIT[f]))%2===1;
@@ -445,6 +584,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='ArrowRight')nav(1);
 });
 refresh();
+renderOv();
 </script></body></html>"""
 
 html = (HTML
@@ -453,6 +593,7 @@ html = (HTML
         .replace("__TOTAL__", f"{totals[latest]:,}")
         .replace("__TABLE__", tbl_html)
         .replace("__FILTERS__", filter_html)
+        .replace("__OVDATA__", ov_json)
         .replace("__DATA__", data_json))
 
 os.makedirs('dist', exist_ok=True)
