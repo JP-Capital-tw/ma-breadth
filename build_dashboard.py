@@ -132,7 +132,7 @@ for seg, cols in seg_cols.items():
     c7 = chg.loc[ov_idx, cols]
     ov_seg[seg] = {
         'p5': pct(gt[5]), 'p10': pct(gt[10]), 'p20': pct(gt[20]), 'p60': pct(gt[60]),
-        'p5m': pct(gt[5] & gt[20]),                        # 站上5MA且站上月線
+        'p5m': pct(gt[5] & ma20_up),                       # 站上5MA且月線上揚
         'up7': ((c7 >= 0.07) & v).sum(axis=1).astype(int).tolist(),
         'dn7': ((c7 <= -0.07) & v).sum(axis=1).astype(int).tolist(),
         'c5': cnt(new_gt[5]), 'c20': cnt(new_gt[20]), 'c60': cnt(new_gt[60]),
@@ -357,7 +357,7 @@ function renderOv(){
   const idxCols= ovSeg==='all' ? [['加權指數','taiex'],['櫃買指數','otcidx']]
               : ovSeg==='sii' ? [['加權指數','taiex']] : [['櫃買指數','otcidx']];
   let h='<thead><tr><th>日期</th>'+idxCols.map(c=>`<th>${c[0]}</th>`).join('')+
-    '<th>&gt;5MA</th><th>&gt;5MA且&gt;月線</th><th>&gt;10MA</th><th>&gt;20MA</th><th>&gt;60MA</th>'+
+    '<th>&gt;5MA</th><th>&gt;5MA且月線揚</th><th>&gt;10MA</th><th>&gt;20MA</th><th>&gt;60MA</th>'+
     '<th>+7%</th><th>-7%</th><th>過5MA</th><th>過20MA</th><th>過60MA</th>'+
     '<th>破5MA</th><th>破20MA</th><th>破60MA</th></tr></thead><tbody>';
   const m7=Math.max(...s.up7,...s.dn7,1);
